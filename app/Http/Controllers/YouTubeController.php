@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Google\Client;
 use Google\Service\YouTube;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class YouTubeController extends Controller
 {
@@ -51,14 +52,11 @@ class YouTubeController extends Controller
         try {
             $video = $this->youtube->videos->listVideos(
                 'snippet,statistics',
-                ['id' => 'bkz0DLyiU_E']
-                // ['id' => $request->videoId]
+                ['id' => $request->videoId]
             );
 
             if (empty($video->items)) {
-                return response()->json([
-                    'message' => 'Video not found'
-                ], 404);
+                return response()->json(['message' => 'Video not found'], 404);
             }
 
             $videoDetails = $video->items[0];
@@ -70,9 +68,8 @@ class YouTubeController extends Controller
                 'likeCount' => $videoDetails->statistics->likeCount,
             ]);
         } catch (\Throwable $th) {
-            return response()->json([
-                'error' => $th->getMessage()
-            ], 500);
+            Log::error('Error fetching video details: ' . $th->getMessage(), ['exception' => $th]);
+            return response()->json(['error' => 'Failed to fetch video details'], 500);
         }
     }
 
@@ -94,42 +91,62 @@ class YouTubeController extends Controller
         try {
             $comments = [];
             $nextPageToken = null;
+            $retryCount = 0;
 
             do {
-                $response = $this->youtube->commentThreads->listCommentThreads('snippet,replies', [
-                    'videoId' => $request->videoId,
-                    'maxResults' => 100,
-                    'pageToken' => $nextPageToken,
-                ]);
+                try {
+                    $response = $this->youtube->commentThreads->listCommentThreads('snippet,replies', [
+                        'videoId' => $request->videoId,
+                        'maxResults' => 100,
+                        'pageToken' => $nextPageToken,
+                    ]);
 
-                foreach ($response->items as $item) {
-                    $comment = [
-                        'comment_id' => $item->id,
-                        'text' => $item->snippet->topLevelComment->snippet->textDisplay,
-                        'author' => $item->snippet->topLevelComment->snippet->authorDisplayName,
-                        'likes' => $item->snippet->topLevelComment->snippet->likeCount,
-                        'replies' => [],
-                    ];
+                    foreach ($response->items as $item) {
+                        $comment = [
+                            'comment_id' => $item->id,
+                            'text' => $item->snippet->topLevelComment->snippet->textDisplay,
+                            'author' => $item->snippet->topLevelComment->snippet->authorDisplayName,
+                            'likes' => $item->snippet->topLevelComment->snippet->likeCount,
+                            'replies' => [],
+                        ];
 
-                    if (isset($item->replies->comments)) {
-                        foreach ($item->replies->comments as $reply) {
-                            $comment['replies'][] = [
-                                'author' => $reply->snippet->authorDisplayName,
-                                'text' => $reply->snippet->textDisplay,
-                                'likes' => $reply->snippet->likeCount,
-                            ];
+                        if (isset($item->replies->comments)) {
+                            foreach ($item->replies->comments as $reply) {
+                                $comment['replies'][] = [
+                                    'author' => $reply->snippet->authorDisplayName,
+                                    'text' => $reply->snippet->textDisplay,
+                                    'likes' => $reply->snippet->likeCount,
+                                ];
+                            }
                         }
+
+                        $comments[] = $comment;
                     }
 
-                    $comments[] = $comment;
-                }
+                    $nextPageToken = $response->nextPageToken ?? null;
 
-                $nextPageToken = $response->nextPageToken ?? null;
+                } catch (\Google_Service_Exception $e) {
+                    if ($e->getCode() == 403 && $retryCount < 3) {
+                        // Handle rate limiting
+                        $retryCount++;
+                        $waitTime = pow(2, $retryCount); // Exponential backoff
+                        Log::warning('Rate limit exceeded, retrying in ' . $waitTime . ' seconds');
+                        sleep($waitTime);
+                        continue;
+                    }
+
+                    Log::error('Error fetching comments: ' . $e->getMessage(), ['exception' => $e]);
+
+                    return response()->json(['error' => 'Failed to fetch comments'], 500);
+                }
             } while ($nextPageToken);
 
             return response()->json($comments);
+
         } catch (\Throwable $th) {
-            return response()->json(['error' => $th->getMessage()], 500);
+            Log::error('Error fetching comments: ' . $th->getMessage(), ['exception' => $th]);
+
+            return response()->json(['error' => 'Failed to fetch comments'], 500);
         }
     }
 

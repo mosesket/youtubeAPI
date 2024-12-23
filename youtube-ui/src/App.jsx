@@ -7,6 +7,7 @@ function App() {
     const [videoDetails, setVideoDetails] = useState(null);
     const [comments, setComments] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
 
     const fetchVideoDetails = async () => {
         setLoading(true);
@@ -16,6 +17,7 @@ function App() {
             });
             setVideoDetails(response.data);
         } catch (error) {
+            setError("Error fetching video details.");
             console.error("Error fetching video details:", error);
         } finally {
             setLoading(false);
@@ -24,17 +26,43 @@ function App() {
 
     const fetchComments = async () => {
         setLoading(true);
+        let nextPageToken = null;
+        let retryCount = 0;
+        let fetchedComments = [];
 
-        try {
-            const response = await axios.get("http://127.0.0.1:8000/api/video-comments", {
-                params: { videoId },
-            });
-            setComments(response.data);
-        } catch (error) {
-            console.error("Error fetching comments:", error);
-        } finally {
-            setLoading(false);
+        while (retryCount < 5) {
+            try {
+                const response = await axios.get("http://127.0.0.1:8000/api/video-comments", {
+                    params: { videoId, pageToken: nextPageToken },
+                });
+
+                fetchedComments = [...fetchedComments, ...response.data];
+                nextPageToken = response.data.nextPageToken;
+
+                if (!nextPageToken) {
+                    break;
+                }
+            } catch (error) {
+                setError("Error fetching comments.");
+                console.error("Error fetching comments:", error);
+
+                if (error.response && error.response.status === 403) {
+                    console.log("Rate limit reached, retrying...");
+                    if (retryCount < 5) {
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+                        retryCount++;
+                    } else {
+                        setError("Rate limit exceeded. Please try again later.");
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
         }
+
+        setComments(fetchedComments);
+        setLoading(false);
     };
 
     const handleSubmit = (e) => {
@@ -59,6 +87,12 @@ function App() {
             {loading && (
                 <div className="loading">
                     <p>Loading...</p>
+                </div>
+            )}
+
+            {error && !loading && (
+                <div className="error">
+                    <p>{error}</p>
                 </div>
             )}
 
